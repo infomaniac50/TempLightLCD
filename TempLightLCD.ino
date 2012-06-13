@@ -20,11 +20,11 @@ DallasTemperature sensors(&oneWire);
 DeviceAddress sensorAddress;
 
 #define REDLITE 3
-#define GREENLITE 5
-#define BLUELITE 6
+#define GREENLITE 9
+#define BLUELITE 10
 
 // initialize the library with the numbers of the interface pins
-LiquidCrystal lcd(7, 8, 9, 10, 11, 12);
+LiquidCrystal lcd(7, 8, 5, 6, 11, 12);
  
 // you can change the overall brightness by range 0 -> 255
 int brightness = 255;

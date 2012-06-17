@@ -5,7 +5,10 @@
 #include <Wire.h> 
 #include <Format.h>
 #include "TSL2561.h"
+#include <EEPROM.h>
+#include <SimpleTimer.h>
 
+// Setup the luminosity sensor
 TSL2561 tsl(TSL2561_ADDR_FLOAT);
 
 // Data wire is plugged into port 2 on the Arduino
@@ -17,6 +20,7 @@ OneWire oneWire(ONE_WIRE_BUS);
 // Pass our oneWire reference to Dallas Temperature. 
 DallasTemperature sensors(&oneWire);
 
+// The address of the Dallas Temperature sensor
 DeviceAddress sensorAddress;
 
 #define REDLITE 3
@@ -25,16 +29,50 @@ DeviceAddress sensorAddress;
 
 // initialize the library with the numbers of the interface pins
 LiquidCrystal lcd(7, 8, 5, 6, 11, 12);
- 
-// you can change the overall brightness by range 0 -> 255
-int brightness = 255;
 
-boolean lcd_toggle = false;
+#define DEBUG
 
-int last_time = 0;
+#define NVCHECKSUM 0x44DB606B2340420BULL
+#define NVVERSION 2
+#define NVOFFSET 5
+#define NVFUNCTIONS 2
 
+uint64_t nvchecksum; 
+uint8_t nvversion;
+uint8_t nvfunctions;
+
+struct LCDSettings
+{
+  // the colors to use for the lcd
+  byte red;
+  byte green;
+  byte blue;
+  // you can change the overall brightness by range 0 -> 255
+  byte brightness;
+};
+
+struct PrintSettings
+{
+  boolean required[NVFUNCTIONS];
+};
+
+struct ConfigSettings
+{  
+  LCDSettings lcd;
+  PrintSettings print;
+};
+
+timer_callback functions[NVFUNCTIONS] = {
+  printTemperatures,
+  printLight
+};
+
+ConfigSettings settings;
+
+//use the first custom character slot
 byte symbol = 0;
 
+//create the degree symbol
 byte degree[8] = {
 B01100,
 B10010,
@@ -46,39 +84,64 @@ B00000,
 B00000
 };
 
+SimpleTimer timer;
+
 void setup() {
-  lcd.createChar(symbol, degree);
   Serial.begin(9600);
+  
+  // send the custom degree symbol to the lcd
+  lcd.createChar(symbol, degree);
   // set up the LCD's number of rows and columns: 
-  lcd.begin(16, 2);
+  lcd.begin(16, 2);  
+  
+  initConfig();
+  
+  setBacklight();
+  
+  // start the luminosity sensor
   tsl.begin();
+  // set the gain and timing
   tsl.setGain(TSL2561_GAIN_16X);
   tsl.setTiming(TSL2561_INTEGRATIONTIME_13MS);
+  
+  // start the Dallas temperature sensor
   sensors.begin();
+  // get the address of the sensor at index 0
   sensors.getAddress(sensorAddress, 0);
+  //set the resolution of the temperature sensor
   sensors.setResolution(sensorAddress, 12);
-  brightness = 100;
-  setBacklight(255,255,255);
+
+  //print the temperatures immediately
   printTemperatures();
+  
+  timer.setInterval(1000, readCommand);
+  timer.setInterval(5000, loopPrint);
 }
 
 void loop() {
-  int c_time = millis();
-  if ((c_time - last_time) >= 5000)
+  timer.run();
+}
+
+void loopPrint()
+{
+  static int i = 0;
+  if (settings.print.required[i])
   {
-    if (lcd_toggle)
+    (*functions[i])();
+  }
+  
+  i++;
+  
+  for(i; i < NVFUNCTIONS; i++)
+  {
+    if(settings.print.required[i])
     {
-      printTemperatures();
+      break;
     }
-    else
-    {
-      printLight();
-    }
-    
-    lcd_toggle = !lcd_toggle;
-    last_time = c_time;
-    readCommand();
-  }  
+  }
+  
+  if (i >= NVFUNCTIONS)
+    i = 0;  
 }
 
 void readCommand()
@@ -89,54 +152,243 @@ void readCommand()
   {
     cmd = Serial.peek();
     
-    if (cmd == 'B' || cmd == 'b')
+    switch(cmd)
     {
-      readBacklightCmd();
+      case 'B':
+      case 'b':
+        readBacklightCmd();
+        break;
+      case 'P':
+      case 'p':
+        readPrintCmd();
+        break;
+      case 'C':
+      case 'c':
+        readConfigCmd();
+        break;
+    }
+    
+    //read any extra characters
+    while(Serial.available() > 0)
+      Serial.read();
+  }
+}
+
+boolean readArgument(char* arg)
+{
+  if (Serial.available() > 2)
+  {
+    Serial.read();
+    Serial.read();
+    
+    char cmd = Serial.read();
+    
+    *arg = cmd;
+    
+    return true;
+  }
+  
+  return false;
+}
+
+void readConfigCmd()
+{
+  char cmd;
+  int bytes;
+  if (readArgument(&cmd))
+  {
+    switch(cmd)
+    {
+      case 'R':
+      case 'r':
+        readConfig(&bytes);
+        break;
+      case 'W':
+      case 'w':
+        writeConfig(&bytes);
+        break;
+    }
+  }
+#ifdef DEBUG
+  Serial.println("tbytes");
+  Serial.println(bytes);
+  Serial.println("");
+#endif
+}
+
+void readPrintCmd()
+{
+  char cmd;
+  if (readArgument(&cmd))
+  {
+    switch(cmd)
+    {
+      case 'T':
+      case 't':
+        tooglePrint(0);
+        break;
+      case 'L':
+      case 'l':
+        tooglePrint(1);
+        break;
     }
   }
 }
 
+void tooglePrint(int i)
+{
+  settings.print.required[i] = !settings.print.required[i];
+}
+
 void readBacklightCmd()
 {
-  static byte red = 255;
-  static byte green = 255;
-  static byte blue = 255;
-  
-  if (Serial.available() > 2)
+  char cmd;
+  if (readArgument(&cmd))
   {
-    char cmd;
-    
-    Serial.read();
-    Serial.read();
-    
-    cmd = Serial.read();
-    
     Serial.read();
 
-    byte value = Serial.parseInt();   
-    if (cmd == 'R' || cmd == 'r')
-    {
-      red = value;
-    }
+    byte value = Serial.parseInt();
     
-    if (cmd == 'G' || cmd == 'g')
+    switch(cmd)
     {
-      green = value;
+      case 'R':
+      case 'r':
+        settings.lcd.red = value;
+        break;
+      case 'G':
+      case 'g':
+        settings.lcd.green = value;
+        break;
+      case 'B':
+      case 'b':
+        settings.lcd.blue = value;
+        break;
+      case 'O':
+      case 'o':
+        settings.lcd.brightness = value;
+        break;
     }
-    
-    if (cmd == 'B' || cmd == 'b')
-    {
-      blue = value;
-    }
-    
-    if (cmd == 'O' || cmd == 'o')
-    {
-      brightness = value;
-    }
-    
-    setBacklight(red,green,blue);
+
+    setBacklight();
   }
+}
+
+boolean initConfig()
+{
+  int bytes1 = -1;
+  int bytes2 = -1;
+  if (!readConfig(&bytes1))
+  {
+    // turn on the backlight at half brightness
+    settings.lcd.brightness = 128;
+    settings.lcd.red = 255;
+    settings.lcd.green = 255;
+    settings.lcd.blue = 255;
+   
+    settings.print.required[0] = true;
+    for(int i = 1; i < NVFUNCTIONS; i++)
+    {
+      settings.print.required[i] = false;
+    }
+    
+    nvchecksum = NVCHECKSUM;
+    nvversion = NVVERSION;
+    nvfunctions = NVFUNCTIONS;
+    writeConfig(&bytes2);
+  }
+#ifdef DEBUG
+  Serial.println("tbytes");
+  Serial.println(bytes1);
+  Serial.println("");
+  Serial.println("tbytes");
+  Serial.println(bytes2);
+  Serial.println("");
+#endif
+}
+
+boolean readConfig(int * bytes)
+{
+  int offset = 0;
+  *bytes = 0;
+  *bytes += readEEPROM(&nvversion, offset, sizeof(nvversion));
+  offset += sizeof(nvversion);
+  *bytes += readEEPROM(&nvfunctions, offset, sizeof(nvfunctions));
+  offset += sizeof(nvfunctions);
+  *bytes += readEEPROM((byte *)&nvchecksum, offset, sizeof(nvchecksum));
+  offset += sizeof(nvchecksum);
+  if (nvchecksum == NVCHECKSUM && nvversion == NVVERSION && nvfunctions == NVFUNCTIONS)
+  {
+    *bytes += readEEPROM((byte *)&settings, offset, sizeof(settings));
+    return true;
+  }
+  else
+  {
+    return false;
+  }
+}
+
+void writeConfig(int * bytes)
+{
+  int offset = 0;
+  *bytes = 0;
+  *bytes += writeEEPROM(&nvversion, offset, sizeof(nvversion));
+  offset += sizeof(nvversion);
   
+  *bytes += writeEEPROM(&nvfunctions, offset, sizeof(nvfunctions));
+  offset += sizeof(nvfunctions);
+  
+  *bytes += writeEEPROM((byte *)&nvchecksum, offset, sizeof(nvchecksum));
+  offset += sizeof(nvchecksum);
+  
+  *bytes += writeEEPROM((byte *)&settings, offset, sizeof(settings));
+}
+
+int readEEPROM(byte * value, int offset, int len)
+{
+  int bytes = 0;
+#ifdef DEBUG
+  Serial.println("read");
+  Serial.println(len);
+  Serial.println("values");
+#endif
+  for (int i = 0; i < len; i++)
+  {
+    value[i] = EEPROM.read(NVOFFSET + i + offset);
+#ifdef DEBUG
+    Serial.println(value[i]);
+#endif
+    bytes++;
+  }
+#ifdef DEBUG  
+  Serial.println("bytes");
+  Serial.println(bytes);
+  Serial.println("");
+#endif
+  return bytes;
+}
+
+int writeEEPROM(byte * value, int offset, int len)
+{
+  int bytes = 0;
+#ifdef DEBUG
+  Serial.println("write");
+  Serial.println(len);
+  Serial.println("values");
+#endif
+  for (int i = 0; i < len; i++)
+  {
+#ifdef DEBUG
+    Serial.println(value[i]);
+#endif
+    EEPROM.write(NVOFFSET + i + offset, value[i]);
+    bytes++;
+  }
+#ifdef DEBUG
+  Serial.println("bytes");
+  Serial.println(bytes);
+  Serial.println("");
+#endif
+  return bytes;
 }
 
 void printLight()
@@ -184,14 +436,21 @@ void printTemperatures()
   lcd.print("F");
 }
  
-void setBacklight(uint8_t r, uint8_t g, uint8_t b) {
+void setBacklight() {
+  uint8_t r, g, b, l;
+  
+  r = settings.lcd.red;
+  g = settings.lcd.green;
+  b = settings.lcd.blue;
+  l = settings.lcd.brightness;
+  
   // normalize the red LED - its brighter than the rest!
   r = map(r, 0, 255, 0, 100);
   g = map(g, 0, 255, 0, 150);
  
-  r = map(r, 0, 255, 0, brightness);
-  g = map(g, 0, 255, 0, brightness);
-  b = map(b, 0, 255, 0, brightness);
+  r = map(r, 0, 255, 0, l);
+  g = map(g, 0, 255, 0, l);
+  b = map(b, 0, 255, 0, l);
  
   // common anode so invert!
   r = map(r, 0, 255, 255, 0);

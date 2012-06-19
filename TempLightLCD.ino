@@ -30,7 +30,7 @@ DeviceAddress sensorAddress;
 // initialize the library with the numbers of the interface pins
 LiquidCrystal lcd(7, 8, 5, 6, 11, 12);
 
-#define DEBUG
+//#define DEBUG
 
 #define NVCHECKSUM 0x44DB606B2340420BULL
 #define NVVERSION 2
@@ -112,7 +112,7 @@ void setup() {
   sensors.setResolution(sensorAddress, 12);
 
   //print the temperatures immediately
-  printTemperatures();
+  loopPrint();
   
   timer.setInterval(1000, readCommand);
   timer.setInterval(5000, loopPrint);
@@ -148,10 +148,8 @@ void readCommand()
 {
   char cmd;
   
-  if (Serial.available() > 0)
+  if (readArgument(&cmd))
   {
-    cmd = Serial.peek();
-    
     switch(cmd)
     {
       case 'B':
@@ -166,6 +164,10 @@ void readCommand()
       case 'c':
         readConfigCmd();
         break;
+      case 'S':
+      case 's':
+        readSensorCmd();
+        break;
     }
     
     //read any extra characters
@@ -173,13 +175,29 @@ void readCommand()
       Serial.read();
   }
 }
+boolean readInteger(int * arg)
+{
+  if (Serial.available() > 0)
+  {
+    while(Serial.peek() == ' ')
+      Serial.read();
+      
+    int num = Serial.parseInt();
+    
+    *arg = num;
+    
+    return true;
+  }
+  
+  return false;
+}
 
 boolean readArgument(char* arg)
 {
-  if (Serial.available() > 2)
+  if (Serial.available() > 0)
   {
-    Serial.read();
-    Serial.read();
+    while(Serial.peek() == ' ')
+      Serial.read();
     
     char cmd = Serial.read();
     
@@ -214,6 +232,42 @@ void readConfigCmd()
   Serial.println(bytes);
   Serial.println("");
 #endif
+}
+
+void readSensorCmd()
+{
+  char cmd;
+  
+  if (readArgument(&cmd))
+  {
+    switch(cmd)
+    {
+      case 'L':
+      case 'l':
+        readLightSensorCmd();
+        break;
+    }
+  }
+}
+
+void readLightSensorCmd()
+{
+  char cmd;
+  
+  if (readArgument(&cmd))
+  {
+    switch(cmd)
+    {
+      case 'I':
+      case 'i':
+        changeIntegrationTime();
+        break;
+      case 'G':
+      case 'g':
+        changeGain();
+        break;
+    }
+  }
 }
 
 void readPrintCmd()
@@ -270,6 +324,45 @@ void readBacklightCmd()
     }
 
     setBacklight();
+  }
+}
+
+void changeIntegrationTime()
+{
+  int value;
+  
+  if (readInteger(&value))
+  {
+    switch(value)
+    {
+      case 1:
+        tsl.setTiming(TSL2561_INTEGRATIONTIME_13MS);
+        break;
+      case 2:
+        tsl.setTiming(TSL2561_INTEGRATIONTIME_101MS);
+        break;
+      case 3:
+        tsl.setTiming(TSL2561_INTEGRATIONTIME_402MS);
+        break;
+    }
+  }
+}
+
+void changeGain()
+{
+  int value;
+  
+  if (readInteger(&value))
+  {
+    switch(value)
+    {
+      case 0:
+        tsl.setGain(TSL2561_GAIN_0X);
+        break;
+      case 1:
+        tsl.setGain(TSL2561_GAIN_16X);
+        break;
+    }
   }
 }
 
@@ -399,18 +492,19 @@ void printLight()
   full = lum & 0xFFFF;
   
   lcd.clear();
-  lcd.print("TLS2561 Demo");
-  lcd.setCursor(0, 1);
-  lcd.print("I");
+  lcd.print("IR ");
   lcd.print(ir);
-//  lcd.print(" ");
-  lcd.print("F");
-  lcd.print(full);
-//  lcd.print(" ");
-  lcd.print("V");
+  lcd.setCursor(8, 0);
+  
+  lcd.print("VI ");
   lcd.print(full - ir);
-//  lcd.print(" ");
-  lcd.print("L");
+
+  lcd.setCursor(0, 1);
+  lcd.print("FL ");
+  lcd.print(full);
+  
+  lcd.setCursor(8, 1);
+  lcd.print("LX ");
   lcd.print(tsl.calculateLux(full, ir));
 }
 

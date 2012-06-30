@@ -7,6 +7,41 @@
 #include "TSL2561.h"
 #include <EEPROM.h>
 #include <SimpleTimer.h>
+#include <EasyTransferI2C.h>
+
+
+#define COMMAND_COUNT 5
+#define ARGUMENT_COUNT 3
+
+struct CMD_DATA
+{
+  boolean cmd;
+  boolean fields[COMMAND_COUNT + ARGUMENT_COUNT];
+  char cmds[COMMAND_COUNT];
+  int args[ARGUMENT_COUNT];
+};
+
+struct VALUE_DATA
+{
+  int full;
+  int ir;
+  int vis;
+  int lux;
+  float temp_c;
+  float temp_f;
+  int r;
+  int g;
+  int b;
+};
+
+VALUE_DATA txdata;
+CMD_DATA rxdata;
+
+EasyTransferI2C ETtx;
+EasyTransferI2C ETrx;
+
+#define I2C_RX_ADDRESS 10
+#define I2C_TX_ADDRESS 9
 
 // Setup the luminosity sensor
 TSL2561 tsl(TSL2561_ADDR_FLOAT);
@@ -85,9 +120,34 @@ B00000
 };
 
 SimpleTimer timer;
-
+#define STATUS_PIN 13
 void setup() {
-  Serial.begin(9600);
+  pinMode(STATUS_PIN, OUTPUT);
+  digitalWrite(STATUS_PIN, LOW);
+  
+  Wire.begin(I2C_RX_ADDRESS);
+  
+  ETtx.begin(details(txdata), &Wire);
+  ETrx.begin(details(rxdata), &Wire);
+  Wire.onReceive(rxdata_receive);
+  
+  txdata.full = 0;
+  txdata.ir = 0;
+  txdata.vis = 0;
+  txdata.lux = 0;
+  
+  txdata.temp_c = 0.0;
+  txdata.temp_f = 0.0;
+  
+  txdata.r = 0;
+  txdata.g = 0;
+  txdata.b = 0;
+  
+  rxdata.cmd = false;
+  for(int i = 0; i < COMMAND_COUNT + ARGUMENT_COUNT; i++)
+  {
+    rxdata.fields[i] = false;
+  }
   
   // send the custom degree symbol to the lcd
   lcd.createChar(symbol, degree);
@@ -120,6 +180,7 @@ void setup() {
 
 void loop() {
   timer.run();
+   ETrx.receiveData();
 }
 
 void loopPrint()
@@ -144,11 +205,23 @@ void loopPrint()
     i = 0;  
 }
 
-void readCommand()
+void rxdata_receive(int numBytes) 
 {
-  char cmd;
+  static boolean value = false;
   
-  if (readArgument(&cmd))
+  value = !value;
+  
+  if (value)
+    digitalWrite(STATUS_PIN, HIGH);
+  else
+    digitalWrite(STATUS_PIN, LOW);
+}
+
+void readCommand()
+{  
+  char cmd;
+ 
+  if (rxdata.cmd && readArgument(&cmd))
   {
     switch(cmd)
     {
@@ -170,22 +243,34 @@ void readCommand()
         break;
     }
     
-    //read any extra characters
-    while(Serial.available() > 0)
-      Serial.read();
+    rxdata.cmd = false;
   }
+
 }
+
+boolean readIndex(int start, int end, int * index)
+{
+  for(int i = start; i < end; i++)
+  {f
+    if(rxdata.fields[i])
+    {
+      rxdata.fields[i] = false;
+      *index = i;
+      return true;
+    }
+  }
+  
+  
+  return false;
+}
+
 boolean readInteger(int * arg)
 {
-  if (Serial.available() > 0)
+  int index = -1;
+
+  if (rxdata.cmd && readIndex(COMMAND_COUNT + 1,COMMAND_COUNT + ARGUMENT_COUNT, &index))
   {
-    while(Serial.peek() == ' ')
-      Serial.read();
-      
-    int num = Serial.parseInt();
-    
-    *arg = num;
-    
+    *arg = rxdata.args[index - (COMMAND_COUNT + 1)];
     return true;
   }
   
@@ -194,15 +279,10 @@ boolean readInteger(int * arg)
 
 boolean readArgument(char* arg)
 {
-  if (Serial.available() > 0)
+  int index = -1;
+  if(rxdata.cmd && readIndex(0, COMMAND_COUNT, &index))
   {
-    while(Serial.peek() == ' ')
-      Serial.read();
-    
-    char cmd = Serial.read();
-    
-    *arg = cmd;
-    
+    *arg = rxdata.cmds[index];
     return true;
   }
   
@@ -227,11 +307,6 @@ void readConfigCmd()
         break;
     }
   }
-#ifdef DEBUG
-  Serial.println("tbytes");
-  Serial.println(bytes);
-  Serial.println("");
-#endif
 }
 
 void readSensorCmd()
@@ -297,12 +372,9 @@ void tooglePrint(int i)
 void readBacklightCmd()
 {
   char cmd;
-  if (readArgument(&cmd))
+  int value;
+  if (readArgument(&cmd) && readInteger(&value))
   {
-    Serial.read();
-
-    byte value = Serial.parseInt();
-    
     switch(cmd)
     {
       case 'R':
@@ -389,14 +461,6 @@ boolean initConfig()
     nvfunctions = NVFUNCTIONS;
     writeConfig(&bytes2);
   }
-#ifdef DEBUG
-  Serial.println("tbytes");
-  Serial.println(bytes1);
-  Serial.println("");
-  Serial.println("tbytes");
-  Serial.println(bytes2);
-  Serial.println("");
-#endif
 }
 
 boolean readConfig(int * bytes)
@@ -439,57 +503,32 @@ void writeConfig(int * bytes)
 int readEEPROM(byte * value, int offset, int len)
 {
   int bytes = 0;
-#ifdef DEBUG
-  Serial.println("read");
-  Serial.println(len);
-  Serial.println("values");
-#endif
   for (int i = 0; i < len; i++)
   {
     value[i] = EEPROM.read(NVOFFSET + i + offset);
-#ifdef DEBUG
-    Serial.println(value[i]);
-#endif
     bytes++;
   }
-#ifdef DEBUG  
-  Serial.println("bytes");
-  Serial.println(bytes);
-  Serial.println("");
-#endif
   return bytes;
 }
 
 int writeEEPROM(byte * value, int offset, int len)
 {
   int bytes = 0;
-#ifdef DEBUG
-  Serial.println("write");
-  Serial.println(len);
-  Serial.println("values");
-#endif
   for (int i = 0; i < len; i++)
   {
-#ifdef DEBUG
-    Serial.println(value[i]);
-#endif
     EEPROM.write(NVOFFSET + i + offset, value[i]);
     bytes++;
   }
-#ifdef DEBUG
-  Serial.println("bytes");
-  Serial.println(bytes);
-  Serial.println("");
-#endif
   return bytes;
 }
 
 void printLight()
 {
   uint32_t lum = tsl.getFullLuminosity();
-  uint16_t ir, full;
+  uint16_t ir, full, lux;
   ir = lum >> 16;
   full = lum & 0xFFFF;
+  lux = tsl.calculateLux(full, ir);
   
   lcd.clear();
   lcd.print("IR ");
@@ -505,7 +544,14 @@ void printLight()
   
   lcd.setCursor(8, 1);
   lcd.print("LX ");
-  lcd.print(tsl.calculateLux(full, ir));
+  lcd.print(lux);
+  
+  txdata.full = full;
+  txdata.ir = ir;
+  txdata.vis = full - ir;
+  txdata.lux = lux;
+  
+  ETtx.sendData(I2C_TX_ADDRESS);
 }
 
 void printTemperatures()
@@ -528,6 +574,11 @@ void printTemperatures()
   lcd.print(stemp_f);
   lcd.write(symbol);
   lcd.print("F");
+  
+  txdata.temp_c = ftemp_c;
+  txdata.temp_f = ftemp_f;
+  
+  ETtx.sendData(I2C_TX_ADDRESS);
 }
  
 void setBacklight() {
@@ -550,10 +601,14 @@ void setBacklight() {
   r = map(r, 0, 255, 255, 0);
   g = map(g, 0, 255, 255, 0);
   b = map(b, 0, 255, 255, 0);
-  Serial.print("R = "); Serial.print(r, DEC);
-  Serial.print(" G = "); Serial.print(g, DEC);
-  Serial.print(" B = "); Serial.println(b, DEC);
+  
   analogWrite(REDLITE, r);
   analogWrite(GREENLITE, g);
   analogWrite(BLUELITE, b);
+  
+  txdata.r = r;
+  txdata.g = g;
+  txdata.b = b;
+  
+  ETtx.sendData(I2C_TX_ADDRESS);
 }

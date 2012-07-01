@@ -268,9 +268,9 @@ boolean readInteger(int * arg)
 {
   int index = -1;
 
-  if (rxdata.cmd && readIndex(COMMAND_COUNT + 1,COMMAND_COUNT + ARGUMENT_COUNT, &index))
+  if (rxdata.cmd && readIndex(COMMAND_COUNT,COMMAND_COUNT + ARGUMENT_COUNT, &index))
   {
-    *arg = rxdata.args[index - (COMMAND_COUNT + 1)];
+    *arg = rxdata.args[index - COMMAND_COUNT];
     return true;
   }
   

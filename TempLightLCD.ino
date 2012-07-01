@@ -251,7 +251,7 @@ void readCommand()
 boolean readIndex(int start, int end, int * index)
 {
   for(int i = start; i < end; i++)
-  {f
+  {
     if(rxdata.fields[i])
     {
       rxdata.fields[i] = false;
